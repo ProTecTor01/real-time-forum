@@ -467,6 +467,61 @@ select {
   transform: translateY(0);
 }
 
+.username-link {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  transition: color 0.2s;
+}
+
+.username-link:hover {
+  color: var(--accent-dark);
+}
+
+#user-label {
+  cursor: pointer;
+  color: var(--accent);
+}
+
+#user-label:hover {
+  text-decoration: underline;
+}
+
+#profile-content {
+  padding: 16px 0;
+  line-height: 1.8;
+}
+
+#profile-content hr {
+  margin: 16px 0;
+  border: none;
+  border-top: 1px solid var(--line);
+}
+
+.message-form {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  background: var(--card);
+  border-top: 1px solid var(--line);
+}
+
+.message-form input[type="file"] {
+  display: none;
+}
+
+.message-form label {
+  padding: 8px;
+  cursor: pointer;
+  border-radius: 4px;
+  background: var(--card);
+  border: 1px solid var(--line);
+}
+
+.message-form label:hover {
+  background: var(--comment-bg);
+}
+
 @media (max-width: 980px) {
   .topbar {
     padding: 12px 14px;

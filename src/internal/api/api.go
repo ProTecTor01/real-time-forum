@@ -5,8 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -695,8 +698,9 @@ func (a *API) handleWSMessage(userID int, raw []byte) {
 	switch envelope.Type {
 	case "send_message":
 		var payload struct {
-			ToUserID int    `json:"to_user_id"`
-			Body     string `json:"body"`
+			ToUserID  int    `json:"to_user_id"`
+			Body      string `json:"body"`
+			ImagePath string `json:"image_path"`
 		}
 		if err := json.Unmarshal(envelope.Data, &payload); err != nil {
 			return
@@ -704,10 +708,15 @@ func (a *API) handleWSMessage(userID int, raw []byte) {
 		if payload.ToUserID == 0 {
 			return
 		}
-		if err := errmsg.ValidateMessageBody(payload.Body); err != nil {
+		if payload.Body != "" {
+			if err := errmsg.ValidateMessageBody(payload.Body); err != nil {
+				return
+			}
+		}
+		if payload.Body == "" && payload.ImagePath == "" {
 			return
 		}
-		msg, err := a.insertMessage(context.Background(), userID, payload.ToUserID, payload.Body)
+		msg, err := a.insertMessageWithImage(context.Background(), userID, payload.ToUserID, payload.Body, payload.ImagePath)
 		if err != nil {
 			return
 		}
@@ -789,22 +798,241 @@ func (a *API) getCommentByID(ctx context.Context, commentID, userID int) (*model
 
 //--------------------------------------------------------------------------------------|
 
+func (a *API) Profile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	userIDStr := strings.TrimPrefix(r.URL.Path, "/api/profiles/")
+	userID, err := strconv.Atoi(userIDStr)
+	if err != nil || userID == 0 {
+		badRequest(w, "Invalid user ID")
+		return
+	}
+
+	profile, err := a.getProfileByID(r.Context(), userID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			notFound(w)
+			return
+		}
+		serverError(w, err)
+		return
+	}
+
+	// Don't expose email to other users
+	profile.Email = ""
+	writeJSON(w, http.StatusOK, profile)
+}
+
+func (a *API) MyProfile(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		userID := utils.GetUserID(r.Context(), r, a.sm)
+		if userID == 0 {
+			unauthorized(w)
+			return
+		}
+
+		profile, err := a.getProfileByID(r.Context(), userID)
+		if err != nil {
+			serverError(w, err)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, profile)
+
+	case http.MethodPut:
+		userID := utils.GetUserID(r.Context(), r, a.sm)
+		if userID == 0 {
+			unauthorized(w)
+			return
+		}
+
+		var payload struct {
+			FirstName string `json:"first_name"`
+			LastName  string `json:"last_name"`
+			Age       int    `json:"age"`
+			Gender    string `json:"gender"`
+		}
+		if err := readJSON(r, &payload); err != nil {
+			badRequest(w, err.Error())
+			return
+		}
+
+		if err := errmsg.ValidateFirstName(payload.FirstName); err != nil {
+			badRequest(w, err.Error())
+			return
+		}
+		if err := errmsg.ValidateLastName(payload.LastName); err != nil {
+			badRequest(w, err.Error())
+			return
+		}
+		if err := errmsg.ValidateAge(payload.Age); err != nil {
+			badRequest(w, err.Error())
+			return
+		}
+		if err := errmsg.ValidateGender(payload.Gender); err != nil {
+			badRequest(w, err.Error())
+			return
+		}
+
+		_, err := a.db.ExecContext(r.Context(),
+			`UPDATE users SET first_name = ?, last_name = ?, age = ?, gender = ? WHERE id = ?`,
+			payload.FirstName, payload.LastName, payload.Age, strings.ToLower(payload.Gender), userID)
+
+		if err != nil {
+			serverError(w, err)
+			return
+		}
+
+		profile, err := a.getProfileByID(r.Context(), userID)
+		if err != nil {
+			serverError(w, err)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, profile)
+
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+func (a *API) getProfileByID(ctx context.Context, userID int) (*models.Profile, error) {
+	query := `
+		SELECT 
+			u.id, u.username, u.first_name, u.last_name, u.age, u.gender, u.email, u.created_at,
+			COALESCE(COUNT(DISTINCT p.id), 0) as post_count,
+			COALESCE(COUNT(DISTINCT c.id), 0) as comment_count,
+			COALESCE(SUM(CASE WHEN l.target_type = 'post' THEN 1 ELSE 0 END), 0) as like_count
+		FROM users u
+		LEFT JOIN posts p ON u.id = p.user_id
+		LEFT JOIN comments c ON u.id = c.user_id
+		LEFT JOIN likes l ON u.id = l.user_id AND l.value = 1
+		WHERE u.id = ?
+		GROUP BY u.id
+	`
+
+	var profile models.Profile
+	err := a.db.QueryRowContext(ctx, query, userID).Scan(
+		&profile.ID, &profile.Username, &profile.FirstName, &profile.LastName,
+		&profile.Age, &profile.Gender, &profile.Email, &profile.CreatedAt,
+		&profile.PostCount, &profile.CommentCount, &profile.LikeCount)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &profile, nil
+}
+
+//--------------------------------------------------------------------------------------|
+
+func (a *API) UploadImage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	userID := utils.GetUserID(r.Context(), r, a.sm)
+	if userID == 0 {
+		unauthorized(w)
+		return
+	}
+
+	// Parse multipart form (max 5MB)
+	if err := r.ParseMultipartForm(5 * 1024 * 1024); err != nil {
+		badRequest(w, "Failed to parse form")
+		return
+	}
+
+	file, handler, err := r.FormFile("image")
+	if err != nil {
+		badRequest(w, "No image file provided")
+		return
+	}
+	defer file.Close()
+
+	// Validate file type
+	allowedTypes := map[string]bool{
+		"image/jpeg": true,
+		"image/png":  true,
+		"image/gif":  true,
+		"image/webp": true,
+	}
+	if !allowedTypes[handler.Header.Get("Content-Type")] {
+		badRequest(w, "Invalid image format")
+		return
+	}
+
+	// Generate unique filename
+	ext := ""
+	switch handler.Header.Get("Content-Type") {
+	case "image/jpeg":
+		ext = ".jpg"
+	case "image/png":
+		ext = ".png"
+	case "image/gif":
+		ext = ".gif"
+	case "image/webp":
+		ext = ".webp"
+	}
+
+	filename := fmt.Sprintf("%d_%s%s", userID, time.Now().Format("20060102150405"), ext)
+	uploadPath := filepath.Join("./assets/uploads", filename)
+
+	dst, err := os.Create(uploadPath)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, file); err != nil {
+		serverError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"path": "/assets/uploads/" + filename,
+	})
+}
+
+//--------------------------------------------------------------------------------------|
+
 func (a *API) insertMessage(ctx context.Context, senderID, receiverID int, body string) (*models.Message, error) {
+	return a.insertMessageWithImage(ctx, senderID, receiverID, body, "")
+}
+
+func (a *API) insertMessageWithImage(ctx context.Context, senderID, receiverID int, body, imagePath string) (*models.Message, error) {
 	now := time.Now().UTC().Truncate(time.Second)
-	result, err := a.db.ExecContext(ctx, `INSERT INTO messages (sender_id, receiver_id, body, created_at) VALUES (?, ?, ?, ?)`,
-		senderID, receiverID, body, now)
+	var imagePathNullString sql.NullString
+	if imagePath != "" {
+		imagePathNullString = sql.NullString{String: imagePath, Valid: true}
+	}
+	result, err := a.db.ExecContext(ctx, `INSERT INTO messages (sender_id, receiver_id, body, image_path, created_at) VALUES (?, ?, ?, ?, ?)`,
+		senderID, receiverID, body, imagePathNullString, now)
 	if err != nil {
 		return nil, err
 	}
 	id, _ := result.LastInsertId()
-	return &models.Message{ID: int(id), SenderID: senderID, ReceiverID: receiverID, Body: body, CreatedAt: now}, nil
+	return &models.Message{
+		ID:        int(id),
+		SenderID:  senderID,
+		ReceiverID: receiverID,
+		Body:      body,
+		ImagePath: imagePathNullString,
+		CreatedAt: now,
+	}, nil
 }
 
 //--------------------------------------------------------------------------------------|
 
 func (a *API) getMessages(ctx context.Context, userID, otherID, beforeID, limit int) ([]models.Message, error) {
 	query := `
-        SELECT id, sender_id, receiver_id, body, created_at
+        SELECT id, sender_id, receiver_id, body, image_path, created_at
         FROM messages
         WHERE ((sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?))
     `
@@ -825,7 +1053,7 @@ func (a *API) getMessages(ctx context.Context, userID, otherID, beforeID, limit 
 	var msgs []models.Message
 	for rows.Next() {
 		var m models.Message
-		if err := rows.Scan(&m.ID, &m.SenderID, &m.ReceiverID, &m.Body, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.SenderID, &m.ReceiverID, &m.Body, &m.ImagePath, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		msgs = append(msgs, m)

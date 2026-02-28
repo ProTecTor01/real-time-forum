@@ -67,6 +67,9 @@ func Setup() (*Config, error) {
 	http.HandleFunc("/api/users", apiHandler.Users)
 	http.HandleFunc("/api/chats", apiHandler.ChatList)
 	http.HandleFunc("/api/messages", apiHandler.Messages)
+	http.HandleFunc("/api/profiles/", apiHandler.Profile)
+	http.HandleFunc("/api/me/profile", apiHandler.MyProfile)
+	http.HandleFunc("/api/upload", apiHandler.UploadImage)
 
 	cfg := &Config{
 		DB:   db,
@@ -109,6 +112,7 @@ func migrate(db *sql.DB) error {
 	applyMigration("./assets/database/migration_add_post_author.sql")
 	applyMigration("./assets/database/migration_add_user_profile.sql")
 	applyMigration("./assets/database/migration_add_messages.sql")
+	applyMigration("./assets/database/migration_add_images.sql")
 
 	return nil
 }

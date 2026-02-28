@@ -73,9 +73,25 @@ type Session struct {
 //--------------------------------------------------------------------------------------|
 
 type Message struct {
-	ID         int       `db:"id" json:"id"`
-	SenderID   int       `db:"sender_id" json:"sender_id"`
+	ID        int       `db:"id" json:"id"`
+	SenderID  int       `db:"sender_id" json:"sender_id"`
 	ReceiverID int       `db:"receiver_id" json:"receiver_id"`
-	Body       string    `db:"body" json:"body"`
-	CreatedAt  time.Time `db:"created_at" json:"created_at"`
+	Body      string    `db:"body" json:"body"`
+	ImagePath sql.NullString `db:"image_path" json:"image_path,omitempty"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
 }
+
+//--------------------------------------------------------------------------------------|
+
+type Profile struct {
+	ID               int       `json:"id"`
+	Username         string    `json:"username"`
+	FirstName        string    `json:"first_name"`
+	LastName         string    `json:"last_name"`
+	Age              int       `json:"age"`
+	Gender           string    `json:"gender"`
+	Email            string    `json:"email,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	PostCount        int       `json:"post_count"`
+	CommentCount     int       `json:"comment_count"`
+	LikeCount        int       `json:"like_count"`}

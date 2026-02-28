@@ -19,7 +19,7 @@
       <button id="theme-toggle" class="ghost small" type="button">Темная тема</button>
     </div>
     <div class="auth-area" id="auth-area">
-      <span id="user-label"></span>
+      <span id="user-label" style="cursor: pointer; text-decoration: underline;"></span>
       <button id="logout-btn" class="ghost">Выйти</button>
     </div>
   </header>
@@ -116,9 +116,38 @@
           <div class="messages" id="messages"></div>
           <form id="message-form" class="message-form">
             <input name="body" placeholder="Сообщение..." autocomplete="off" />
+            <label for="image-input" class="ghost small" title="Прикрепить изображение">📎</label>
+            <input type="file" id="image-input" name="image" accept="image/*" style="display:none" />
             <button type="submit">Отправить</button>
           </form>
         </div>
+      </section>
+
+      <section id="profile-view" class="view">
+        <div class="card">
+          <h2 id="profile-title">Профиль</h2>
+          <div id="profile-content"></div>
+          <button id="edit-profile-btn" class="ghost" style="display:none">Редактировать</button>
+        </div>
+      </section>
+
+      <section id="edit-profile-view" class="view">
+        <form id="edit-profile-form" class="card">
+          <h2>Редактировать профиль</h2>
+          <label>Имя<input name="first_name" required /></label>
+          <label>Фамилия<input name="last_name" required /></label>
+          <label>Возраст<input name="age" type="number" min="13" max="120" required /></label>
+          <label>Пол
+            <select name="gender" required>
+              <option value="male">Мужской</option>
+              <option value="female">Женский</option>
+              <option value="other">Другое</option>
+            </select>
+          </label>
+          <button type="submit">Сохранить</button>
+          <button type="button" id="cancel-edit">Отмена</button>
+          <p class="error" id="edit-profile-error"></p>
+        </form>
       </section>
     </section>
   </main>

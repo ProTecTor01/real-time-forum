@@ -16,6 +16,8 @@
   isTyping: false,
   typingTimeout: null,
   notificationPermission: "default",
+  pendingImagePath: null,
+  viewingProfile: null,
 };
 
 const views = {
@@ -24,6 +26,8 @@ const views = {
   post: document.getElementById("post-view"),
   create: document.getElementById("create-view"),
   chat: document.getElementById("chat-view"),
+  profile: document.getElementById("profile-view"),
+  editProfile: document.getElementById("edit-profile-view"),
 };
 
 const chatSidebar = document.getElementById("chat-sidebar");
@@ -321,6 +325,10 @@ function bindUI() {
     handleSessionExpired("");
   });
 
+  document.getElementById("user-label").addEventListener("click", () => {
+    showMyProfile();
+  });
+
   document.getElementById("login-form").addEventListener("submit", async e => {
     e.preventDefault();
     const form = e.target;
@@ -396,9 +404,13 @@ function bindUI() {
     if (!state.activeChat || !state.ws) return;
     const input = e.target.body;
     const body = input.value.trim();
-    if (!body) return;
-    state.ws.send(JSON.stringify({ type: "send_message", data: { to_user_id: state.activeChat.id, body } }));
+    const imagePath = state.pendingImagePath;
+    if (!body && !imagePath) return;
+    const payload = { to_user_id: state.activeChat.id, body };
+    if (imagePath) payload.image_path = imagePath;
+    state.ws.send(JSON.stringify({ type: "send_message", data: payload }));
     input.value = "";
+    state.pendingImagePath = null;
   });
   messageInput.addEventListener("input", () => {
     if (!state.activeChat || !state.ws) return;
@@ -413,6 +425,27 @@ function bindUI() {
     }, 800);
   });
 
+  document.getElementById("image-input").addEventListener("change", async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append("image", file);
+    try {
+      const res = await fetch("/api/upload", {
+        method: "POST",
+        credentials: "same-origin",
+        body: formData,
+      });
+      if (!res.ok) throw new Error("Upload failed");
+      const data = await res.json();
+      state.pendingImagePath = data.path;
+      showToast("Изображение выбрано ✓");
+    } catch (err) {
+      alert("Ошибка загрузки: " + err.message);
+    }
+    e.target.value = "";
+  });
+
   document.getElementById("refresh-posts").addEventListener("click", loadPosts);
   showNewPostsBtn.addEventListener("click", flushPendingPosts);
   if (clearUnreadBtn) {
@@ -422,6 +455,29 @@ function bindUI() {
       updateUnreadHeader();
     });
   }
+
+  document.getElementById("edit-profile-form")?.addEventListener("submit", async e => {
+    e.preventDefault();
+    const form = e.target;
+    const data = Object.fromEntries(new FormData(form));
+    data.age = Number(data.age);
+    try {
+      const profile = await apiFetch("/api/me/profile", {
+        method: "PUT",
+        body: JSON.stringify(data),
+      });
+      form.reset();
+      document.getElementById("edit-profile-error").textContent = "";
+      state.viewingProfile = null;
+      showMyProfile();
+    } catch (err) {
+      document.getElementById("edit-profile-error").textContent = err.message;
+    }
+  });
+
+  document.getElementById("cancel-edit")?.addEventListener("click", () => {
+    showMyProfile();
+  });
   categoryFilter.addEventListener("change", loadPosts);
   typeFilter.addEventListener("change", loadPosts);
 
@@ -504,13 +560,17 @@ function renderPosts() {
     card.className = "post";
     card.innerHTML = `
       <h3>${escapeHtml(post.title)}</h3>
-      <div class="meta">${post.username} • ${formatDate(post.created_at)}</div>
+      <div class="meta"><span class="username-link" data-user-id="${post.user_id}">${escapeHtml(post.username)}</span> • ${formatDate(post.created_at)}</div>
       <div>${escapeHtml(post.body)}</div>
       <div class="tags">${(post.categories || []).map(c => `<span class="tag">${escapeHtml(c.name)}</span>`).join("")}</div>
       ${renderReactionControls("post", post.id, post.likes, post.dislikes, post.user_like)}
       <button class="ghost">Открыть</button>
     `;
     card.querySelector("button").addEventListener("click", () => showPost(post.id));
+    card.querySelector(".username-link").addEventListener("click", e => {
+      e.stopPropagation();
+      showProfile(parseInt(e.target.dataset.userId));
+    });
     postsEl.appendChild(card);
   });
 }
@@ -528,12 +588,16 @@ function renderPostDetail(post) {
   postDetailEl.innerHTML = `
     <article class="post">
       <h2>${escapeHtml(post.title)}</h2>
-      <div class="meta">${post.username} • ${formatDate(post.created_at)}</div>
+      <div class="meta"><span class="username-link" data-user-id="${post.user_id}">${escapeHtml(post.username)}</span> • ${formatDate(post.created_at)}</div>
       <p>${escapeHtml(post.body)}</p>
       <div class="tags">${(post.categories || []).map(c => `<span class="tag">${escapeHtml(c.name)}</span>`).join("")}</div>
       ${renderReactionControls("post", post.id, post.likes, post.dislikes, post.user_like)}
     </article>
   `;
+  postDetailEl.querySelector(".username-link").addEventListener("click", e => {
+    e.stopPropagation();
+    showProfile(parseInt(e.target.dataset.userId));
+  });
 }
 
 function renderComments(comments) {
@@ -546,11 +610,15 @@ function renderComment(comment, depth) {
   el.className = "comment";
   el.style.marginLeft = `${depth * 16}px`;
   el.innerHTML = `
-    <div class="meta">${escapeHtml(comment.username)} • ${formatDate(comment.created_at)}</div>
+    <div class="meta"><span class="username-link" data-user-id="${comment.user_id}">${escapeHtml(comment.username)}</span> • ${formatDate(comment.created_at)}</div>
     <div>${escapeHtml(comment.body)}</div>
     ${renderReactionControls("comment", comment.id, comment.likes, comment.dislikes, comment.user_like)}
     <button class="ghost">Ответить</button>
   `;
+  el.querySelector(".username-link").addEventListener("click", e => {
+    e.stopPropagation();
+    showProfile(parseInt(e.target.dataset.userId));
+  });
   el.querySelector("button").addEventListener("click", () => {
     const form = document.getElementById("comment-form");
     form.parent_id.value = comment.id;
@@ -648,10 +716,14 @@ function renderMessages() {
     el.className = "message";
     const isMine = msg.sender_id === state.user.id;
     const name = isMine ? escapeHtml(state.user.username) : escapeHtml(state.activeChat.username);
-    el.innerHTML = `
-      <div class="meta">${name} • ${formatDate(msg.created_at)}</div>
-      <div>${escapeHtml(msg.body)}</div>
-    `;
+    let content = `<div class="meta">${name} • ${formatDate(msg.created_at)}</div>`;
+    if (msg.image_path) {
+      content += `<img src="${escapeHtml(msg.image_path)}" style="max-width:100%;max-height:300px;border-radius:4px;margin:8px 0" />`;
+    }
+    if (msg.body) {
+      content += `<div>${escapeHtml(msg.body)}</div>`;
+    }
+    el.innerHTML = content;
     messagesEl.appendChild(el);
   });
 }
@@ -765,6 +837,64 @@ function throttle(fn, wait) {
       }, wait - (now - last));
     }
   };
+}
+
+async function showMyProfile() {
+  try {
+    const profile = await apiFetch("/api/me/profile");
+    state.viewingProfile = profile;
+    renderProfile(profile, true);
+    showView("profile");
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+async function showProfile(userID) {
+  try {
+    const profile = await apiFetch(`/api/profiles/${userID}`);
+    state.viewingProfile = profile;
+    renderProfile(profile, false);
+    showView("profile");
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+function renderProfile(profile, isOwn) {
+  const genderMap = { male: "Мужской", female: "Женский", other: "Другое" };
+  const contentEl = document.getElementById("profile-content");
+  contentEl.innerHTML = `
+    <div style="margin:16px 0">
+      <p><strong>Никнейм:</strong> ${escapeHtml(profile.username)}</p>
+      <p><strong>Имя:</strong> ${escapeHtml(profile.first_name)}</p>
+      <p><strong>Фамилия:</strong> ${escapeHtml(profile.last_name)}</p>
+      <p><strong>Возраст:</strong> ${profile.age}</p>
+      <p><strong>Пол:</strong> ${genderMap[profile.gender] || profile.gender}</p>
+      ${isOwn ? `<p><strong>Email:</strong> ${escapeHtml(profile.email)}</p>` : ""}
+      <p><strong>Участник с:</strong> ${formatDate(profile.created_at)}</p>
+      <hr style="margin:16px 0">
+      <p><strong>Постов:</strong> ${profile.post_count}</p>
+      <p><strong>Комментариев:</strong> ${profile.comment_count}</p>
+      <p><strong>Лайков получено:</strong> ${profile.like_count}</p>
+    </div>
+  `;
+  document.getElementById("profile-title").textContent = isOwn ? "Мой профиль" : `Профиль ${escapeHtml(profile.username)}`;
+  const editBtn = document.getElementById("edit-profile-btn");
+  if (editBtn) {
+    editBtn.style.display = isOwn ? "block" : "none";
+    editBtn.onclick = showEditProfile;
+  }
+}
+
+function showEditProfile() {
+  if (!state.viewingProfile) return;
+  const form = document.getElementById("edit-profile-form");
+  form.first_name.value = state.viewingProfile.first_name;
+  form.last_name.value = state.viewingProfile.last_name;
+  form.age.value = state.viewingProfile.age;
+  form.gender.value = state.viewingProfile.gender;
+  showView("editProfile");
 }
 
 init().catch(err => {
