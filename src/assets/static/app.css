@@ -179,6 +179,12 @@ button.small {
   align-items: center;
 }
 
+.chat-user {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .chat-item:hover {
   border-color: var(--line);
   background: rgba(240, 90, 40, 0.06);
@@ -338,6 +344,51 @@ select {
   font-size: 14px;
 }
 
+.meta-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(240, 90, 40, 0.18);
+  color: var(--accent-dark);
+  font-weight: 700;
+  flex-shrink: 0;
+  object-fit: cover;
+}
+
+.avatar-sm {
+  width: 32px;
+  height: 32px;
+  font-size: 14px;
+}
+
+.avatar-xs {
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
+}
+
+.avatar-lg {
+  width: 72px;
+  height: 72px;
+  font-size: 26px;
+}
+
+.post-image {
+  width: 100%;
+  max-width: 560px;
+  max-height: 420px;
+  object-fit: contain;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+}
+
 .reactions {
   display: flex;
   gap: 8px;
@@ -404,6 +455,12 @@ select {
   flex-wrap: wrap;
 }
 
+#chat-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .typing {
   font-weight: 400;
   color: var(--muted);
@@ -422,6 +479,14 @@ select {
 
 .message {
   margin-bottom: 12px;
+}
+
+.message-image {
+  max-width: 100%;
+  max-height: 300px;
+  border-radius: 8px;
+  margin: 8px 0;
+  border: 1px solid var(--line);
 }
 
 .message .meta {
@@ -492,10 +557,33 @@ select {
   line-height: 1.8;
 }
 
+.profile-avatar-wrap {
+  margin-bottom: 14px;
+}
+
 #profile-content hr {
   margin: 16px 0;
   border: none;
   border-top: 1px solid var(--line);
+}
+
+.upload-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.upload-row > label {
+  margin-bottom: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.upload-row input[type="file"] {
+  display: none;
 }
 
 .message-form {

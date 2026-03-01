@@ -50,6 +50,7 @@ func Setup() (*Config, error) {
 
 	staticDir := utils.Getenv("STATIC_DIR", DefaultStaticDir)
 	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(staticDir))))
+	http.Handle("/assets/uploads/", http.StripPrefix("/assets/uploads/", http.FileServer(http.Dir("./assets/uploads"))))
 	http.HandleFunc("/", apiHandler.Index)
 	http.HandleFunc("/ws", apiHandler.WS)
 
@@ -113,6 +114,7 @@ func migrate(db *sql.DB) error {
 	applyMigration("./assets/database/migration_add_user_profile.sql")
 	applyMigration("./assets/database/migration_add_messages.sql")
 	applyMigration("./assets/database/migration_add_images.sql")
+	applyMigration("./assets/database/migration_add_media.sql")
 
 	return nil
 }

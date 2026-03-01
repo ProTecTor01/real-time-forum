@@ -31,7 +31,7 @@ func NewDBRepo(db *sql.DB) *DBRepo {
 
 func (r *DBRepo) GetPosts(ctx context.Context, userID, categoryID int, filter string, limit, offset int) ([]models.Post, error) {
 	query := `
-        SELECT p.id, p.user_id, COALESCE(p.author, u.username) AS author, p.title, p.body, p.created_at,
+        SELECT p.id, p.user_id, COALESCE(p.author, u.username) AS author, u.avatar_path, p.title, p.body, p.image_path, p.created_at,
                COALESCE(SUM(CASE WHEN l.value = 1 THEN 1 ELSE 0 END), 0) AS likes,
                COALESCE(SUM(CASE WHEN l.value = -1 THEN 1 ELSE 0 END), 0) AS dislikes,
                COALESCE(SUM(CASE WHEN l.user_id = ? THEN l.value ELSE 0 END), 0) AS user_like
@@ -64,7 +64,7 @@ func (r *DBRepo) GetPosts(ctx context.Context, userID, categoryID int, filter st
 	var posts []models.Post
 	for rows.Next() {
 		var p models.Post
-		if err := rows.Scan(&p.ID, &p.UserID, &p.Username, &p.Title, &p.Body, &p.CreatedAt, &p.Likes, &p.Dislikes, &p.UserLike); err != nil {
+		if err := rows.Scan(&p.ID, &p.UserID, &p.Username, &p.AvatarPath, &p.Title, &p.Body, &p.ImagePath, &p.CreatedAt, &p.Likes, &p.Dislikes, &p.UserLike); err != nil {
 			return nil, err
 		}
 		posts = append(posts, p)
@@ -82,7 +82,7 @@ func (r *DBRepo) GetPosts(ctx context.Context, userID, categoryID int, filter st
 func (r *DBRepo) GetPost(ctx context.Context, postID, userID int) (*models.Post, error) {
 	var p models.Post
 	err := r.db.QueryRowContext(ctx,
-		`SELECT p.id, p.user_id, COALESCE(p.author, u.username) AS author, p.title, p.body, p.created_at,
+		`SELECT p.id, p.user_id, COALESCE(p.author, u.username) AS author, u.avatar_path, p.title, p.body, p.image_path, p.created_at,
                 COALESCE(SUM(CASE WHEN l.value = 1 THEN 1 ELSE 0 END), 0) AS likes,
                 COALESCE(SUM(CASE WHEN l.value = -1 THEN 1 ELSE 0 END), 0) AS dislikes,
                 COALESCE(SUM(CASE WHEN l.user_id = ? THEN l.value ELSE 0 END), 0) AS user_like
@@ -91,7 +91,7 @@ func (r *DBRepo) GetPost(ctx context.Context, postID, userID int) (*models.Post,
          LEFT JOIN likes l ON l.target_id = p.id AND l.target_type = 'post'
          WHERE p.id = ?
          GROUP BY p.id`, userID, postID).Scan(
-		&p.ID, &p.UserID, &p.Username, &p.Title, &p.Body, &p.CreatedAt, &p.Likes, &p.Dislikes, &p.UserLike)
+		&p.ID, &p.UserID, &p.Username, &p.AvatarPath, &p.Title, &p.Body, &p.ImagePath, &p.CreatedAt, &p.Likes, &p.Dislikes, &p.UserLike)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +101,7 @@ func (r *DBRepo) GetPost(ctx context.Context, postID, userID int) (*models.Post,
 
 //--------------------------------------------------------------------------------------|
 
-func (r *DBRepo) CreatePost(ctx context.Context, userID int, title, body string, categoryIDs []int) (*models.Post, error) {
+func (r *DBRepo) CreatePost(ctx context.Context, userID int, title, body, imagePath string, categoryIDs []int) (*models.Post, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("could not begin transaction: %w", err)
@@ -113,8 +113,13 @@ func (r *DBRepo) CreatePost(ctx context.Context, userID int, title, body string,
 		}
 	}()
 
-	result, err := tx.ExecContext(ctx, `INSERT INTO posts (user_id, title, body, created_at) VALUES (?, ?, ?, ?)`,
-		userID, title, body, time.Now())
+	var imagePathNull sql.NullString
+	if imagePath != "" {
+		imagePathNull = sql.NullString{String: imagePath, Valid: true}
+	}
+
+	result, err := tx.ExecContext(ctx, `INSERT INTO posts (user_id, title, body, image_path, created_at) VALUES (?, ?, ?, ?, ?)`,
+		userID, title, body, imagePathNull, time.Now())
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert post: %w", err)
 	}
@@ -133,7 +138,13 @@ func (r *DBRepo) CreatePost(ctx context.Context, userID int, title, body string,
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	return &models.Post{ID: postID, UserID: userID, Title: title, Body: body}, nil
+	return &models.Post{
+		ID:        postID,
+		UserID:    userID,
+		Title:     title,
+		Body:      body,
+		ImagePath: imagePathNull,
+	}, nil
 }
 
 //--------------------------------------------------------------------------------------|

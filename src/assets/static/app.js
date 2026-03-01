@@ -17,6 +17,8 @@
   typingTimeout: null,
   notificationPermission: "default",
   pendingImagePath: null,
+  pendingPostImagePath: null,
+  pendingAvatarPath: null,
   viewingProfile: null,
 };
 
@@ -106,6 +108,45 @@ function getUserLikeValue(value) {
     if (Object.prototype.hasOwnProperty.call(value, "Int64")) return Number(value.Int64) || 0;
   }
   return 0;
+}
+
+function getNullableString(value) {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") {
+    if (Object.prototype.hasOwnProperty.call(value, "Valid") && value.Valid === false) return "";
+    if (typeof value.String === "string") return value.String;
+  }
+  return "";
+}
+
+function renderAvatar(pathValue, name, className = "avatar") {
+  const path = getNullableString(pathValue);
+  if (path) {
+    return `<img class="${className}" src="${escapeHtml(path)}" alt="${escapeHtml(name || "avatar")}" />`;
+  }
+  const letter = (name || "?").trim().charAt(0).toUpperCase() || "?";
+  return `<span class="${className} avatar-fallback">${escapeHtml(letter)}</span>`;
+}
+
+function renderPostImage(pathValue) {
+  const path = getNullableString(pathValue);
+  if (!path) return "";
+  return `<img class="post-image" src="${escapeHtml(path)}" alt="Изображение поста" />`;
+}
+
+async function uploadImage(file) {
+  const formData = new FormData();
+  formData.append("image", file);
+  const res = await fetch("/api/upload", {
+    method: "POST",
+    credentials: "same-origin",
+    body: formData,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || "Upload failed");
+  }
+  return data;
 }
 
 function renderReactionControls(targetType, targetId, likes, dislikes, userLikeRaw) {
@@ -365,12 +406,14 @@ function bindUI() {
     const form = e.target;
     const data = Object.fromEntries(new FormData(form));
     const selected = Array.from(categorySelect.selectedOptions).map(o => Number(o.value));
+    const payload = { title: data.title, body: data.body, category_ids: selected };
+    if (state.pendingPostImagePath) payload.image_path = state.pendingPostImagePath;
     try {
-      const post = await apiFetch("/api/posts", {
-        method: "POST",
-        body: JSON.stringify({ title: data.title, body: data.body, category_ids: selected }),
-      });
+      const post = await apiFetch("/api/posts", { method: "POST", body: JSON.stringify(payload) });
       form.reset();
+      state.pendingPostImagePath = null;
+      const postImageStatus = document.getElementById("post-image-status");
+      if (postImageStatus) postImageStatus.textContent = "";
       document.getElementById("post-error").textContent = "";
       state.posts.unshift(post);
       renderPosts();
@@ -411,6 +454,8 @@ function bindUI() {
     state.ws.send(JSON.stringify({ type: "send_message", data: payload }));
     input.value = "";
     state.pendingImagePath = null;
+    const chatImageStatus = document.getElementById("chat-image-status");
+    if (chatImageStatus) chatImageStatus.textContent = "";
   });
   messageInput.addEventListener("input", () => {
     if (!state.activeChat || !state.ws) return;
@@ -425,23 +470,47 @@ function bindUI() {
     }, 800);
   });
 
-  document.getElementById("image-input").addEventListener("change", async e => {
+  document.getElementById("chat-image-input").addEventListener("change", async e => {
     const file = e.target.files[0];
     if (!file) return;
-    const formData = new FormData();
-    formData.append("image", file);
     try {
-      const res = await fetch("/api/upload", {
-        method: "POST",
-        credentials: "same-origin",
-        body: formData,
-      });
-      if (!res.ok) throw new Error("Upload failed");
-      const data = await res.json();
+      const data = await uploadImage(file);
       state.pendingImagePath = data.path;
+      const chatImageStatus = document.getElementById("chat-image-status");
+      if (chatImageStatus) chatImageStatus.textContent = "Картинка прикреплена";
       showToast("Изображение выбрано ✓");
     } catch (err) {
       alert("Ошибка загрузки: " + err.message);
+    }
+    e.target.value = "";
+  });
+
+  document.getElementById("post-image-input")?.addEventListener("change", async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const data = await uploadImage(file);
+      state.pendingPostImagePath = data.path;
+      const postImageStatus = document.getElementById("post-image-status");
+      if (postImageStatus) postImageStatus.textContent = "Картинка поста прикреплена";
+      showToast("Фото для поста загружено");
+    } catch (err) {
+      document.getElementById("post-error").textContent = err.message;
+    }
+    e.target.value = "";
+  });
+
+  document.getElementById("avatar-input")?.addEventListener("change", async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const data = await uploadImage(file);
+      state.pendingAvatarPath = data.path;
+      const avatarStatus = document.getElementById("avatar-status");
+      if (avatarStatus) avatarStatus.textContent = "Новый аватар загружен";
+      showToast("Аватар обновится после сохранения");
+    } catch (err) {
+      document.getElementById("edit-profile-error").textContent = err.message;
     }
     e.target.value = "";
   });
@@ -460,22 +529,33 @@ function bindUI() {
     e.preventDefault();
     const form = e.target;
     const data = Object.fromEntries(new FormData(form));
+    delete data.avatar;
     data.age = Number(data.age);
+    data.avatar_path = state.pendingAvatarPath !== null
+      ? state.pendingAvatarPath
+      : getNullableString(state.viewingProfile?.avatar_path);
     try {
       const profile = await apiFetch("/api/me/profile", {
         method: "PUT",
         body: JSON.stringify(data),
       });
       form.reset();
+      state.pendingAvatarPath = null;
+      const avatarStatus = document.getElementById("avatar-status");
+      if (avatarStatus) avatarStatus.textContent = "";
       document.getElementById("edit-profile-error").textContent = "";
-      state.viewingProfile = null;
-      showMyProfile();
+      state.viewingProfile = profile;
+      renderProfile(profile, true);
+      showView("profile");
     } catch (err) {
       document.getElementById("edit-profile-error").textContent = err.message;
     }
   });
 
   document.getElementById("cancel-edit")?.addEventListener("click", () => {
+    state.pendingAvatarPath = null;
+    const avatarStatus = document.getElementById("avatar-status");
+    if (avatarStatus) avatarStatus.textContent = "";
     showMyProfile();
   });
   categoryFilter.addEventListener("change", loadPosts);
@@ -560,13 +640,17 @@ function renderPosts() {
     card.className = "post";
     card.innerHTML = `
       <h3>${escapeHtml(post.title)}</h3>
-      <div class="meta"><span class="username-link" data-user-id="${post.user_id}">${escapeHtml(post.username)}</span> • ${formatDate(post.created_at)}</div>
+      <div class="meta-row">
+        ${renderAvatar(post.avatar_path, post.username, "avatar avatar-sm")}
+        <div class="meta"><span class="username-link" data-user-id="${post.user_id}">${escapeHtml(post.username)}</span> • ${formatDate(post.created_at)}</div>
+      </div>
       <div>${escapeHtml(post.body)}</div>
+      ${renderPostImage(post.image_path)}
       <div class="tags">${(post.categories || []).map(c => `<span class="tag">${escapeHtml(c.name)}</span>`).join("")}</div>
       ${renderReactionControls("post", post.id, post.likes, post.dislikes, post.user_like)}
-      <button class="ghost">Открыть</button>
+      <button class="ghost open-post-btn" type="button">Открыть</button>
     `;
-    card.querySelector("button").addEventListener("click", () => showPost(post.id));
+    card.querySelector(".open-post-btn").addEventListener("click", () => showPost(post.id));
     card.querySelector(".username-link").addEventListener("click", e => {
       e.stopPropagation();
       showProfile(parseInt(e.target.dataset.userId));
@@ -588,8 +672,12 @@ function renderPostDetail(post) {
   postDetailEl.innerHTML = `
     <article class="post">
       <h2>${escapeHtml(post.title)}</h2>
-      <div class="meta"><span class="username-link" data-user-id="${post.user_id}">${escapeHtml(post.username)}</span> • ${formatDate(post.created_at)}</div>
+      <div class="meta-row">
+        ${renderAvatar(post.avatar_path, post.username, "avatar avatar-sm")}
+        <div class="meta"><span class="username-link" data-user-id="${post.user_id}">${escapeHtml(post.username)}</span> • ${formatDate(post.created_at)}</div>
+      </div>
       <p>${escapeHtml(post.body)}</p>
+      ${renderPostImage(post.image_path)}
       <div class="tags">${(post.categories || []).map(c => `<span class="tag">${escapeHtml(c.name)}</span>`).join("")}</div>
       ${renderReactionControls("post", post.id, post.likes, post.dislikes, post.user_like)}
     </article>
@@ -610,16 +698,19 @@ function renderComment(comment, depth) {
   el.className = "comment";
   el.style.marginLeft = `${depth * 16}px`;
   el.innerHTML = `
-    <div class="meta"><span class="username-link" data-user-id="${comment.user_id}">${escapeHtml(comment.username)}</span> • ${formatDate(comment.created_at)}</div>
+    <div class="meta-row">
+      ${renderAvatar(comment.avatar_path, comment.username, "avatar avatar-xs")}
+      <div class="meta"><span class="username-link" data-user-id="${comment.user_id}">${escapeHtml(comment.username)}</span> • ${formatDate(comment.created_at)}</div>
+    </div>
     <div>${escapeHtml(comment.body)}</div>
     ${renderReactionControls("comment", comment.id, comment.likes, comment.dislikes, comment.user_like)}
-    <button class="ghost">Ответить</button>
+    <button class="ghost reply-btn" type="button">Ответить</button>
   `;
   el.querySelector(".username-link").addEventListener("click", e => {
     e.stopPropagation();
     showProfile(parseInt(e.target.dataset.userId));
   });
-  el.querySelector("button").addEventListener("click", () => {
+  el.querySelector(".reply-btn").addEventListener("click", () => {
     const form = document.getElementById("comment-form");
     form.parent_id.value = comment.id;
     form.body.focus();
@@ -648,9 +739,12 @@ function renderChatList() {
     const ping = state.lastPing === chat.id && !isActive;
     item.className = "chat-item" + (isActive ? " active" : "") + (ping ? " ping" : "");
     item.innerHTML = `
-      <div>
-        <div>${escapeHtml(chat.username)}</div>
-        <div class="status ${chat.online ? "online" : ""}">${chat.online ? "online" : "offline"}</div>
+      <div class="chat-user">
+        ${renderAvatar(chat.avatar_path, chat.username, "avatar avatar-xs")}
+        <div>
+          <div>${escapeHtml(chat.username)}</div>
+          <div class="status ${chat.online ? "online" : ""}">${chat.online ? "online" : "offline"}</div>
+        </div>
       </div>
       <div class="status">${chat.last_time ? formatDate(chat.last_time) : ""}</div>
       ${unread ? `<span class="badge">${unread}</span>` : ""}
@@ -668,7 +762,10 @@ async function openChat(chat) {
   state.lastPing = null;
   setTypingIndicator(false);
   messagesEl.innerHTML = "";
-  chatTitleEl.textContent = escapeHtml(chat.username);
+  chatTitleEl.innerHTML = `
+    ${renderAvatar(chat.avatar_path, chat.username, "avatar avatar-xs")}
+    <span>${escapeHtml(chat.username)}</span>
+  `;
   await loadMoreMessages();
   renderChatList();
   updateUnreadHeader();
@@ -717,8 +814,9 @@ function renderMessages() {
     const isMine = msg.sender_id === state.user.id;
     const name = isMine ? escapeHtml(state.user.username) : escapeHtml(state.activeChat.username);
     let content = `<div class="meta">${name} • ${formatDate(msg.created_at)}</div>`;
-    if (msg.image_path) {
-      content += `<img src="${escapeHtml(msg.image_path)}" style="max-width:100%;max-height:300px;border-radius:4px;margin:8px 0" />`;
+    const messageImagePath = getNullableString(msg.image_path);
+    if (messageImagePath) {
+      content += `<img class="message-image" src="${escapeHtml(messageImagePath)}" alt="Изображение сообщения" />`;
     }
     if (msg.body) {
       content += `<div>${escapeHtml(msg.body)}</div>`;
@@ -783,8 +881,9 @@ function handleIncomingMessage(msg) {
       const senderName = chat ? chat.username : "Пользователь";
       showToast(`Новое сообщение от ${senderName}`);
       if ("Notification" in window && Notification.permission === "granted") {
+        const notificationBody = msg.body || (getNullableString(msg.image_path) ? "Изображение" : "");
         const notification = new Notification(`Новое сообщение от ${senderName}`, {
-          body: msg.body,
+          body: notificationBody,
         });
         notification.onclick = () => window.focus();
       }
@@ -863,9 +962,13 @@ async function showProfile(userID) {
 
 function renderProfile(profile, isOwn) {
   const genderMap = { male: "Мужской", female: "Женский", other: "Другое" };
+  const avatarPath = getNullableString(profile.avatar_path);
   const contentEl = document.getElementById("profile-content");
   contentEl.innerHTML = `
     <div style="margin:16px 0">
+      <div class="profile-avatar-wrap">
+        ${renderAvatar(avatarPath, profile.username, "avatar avatar-lg")}
+      </div>
       <p><strong>Никнейм:</strong> ${escapeHtml(profile.username)}</p>
       <p><strong>Имя:</strong> ${escapeHtml(profile.first_name)}</p>
       <p><strong>Фамилия:</strong> ${escapeHtml(profile.last_name)}</p>
@@ -894,6 +997,9 @@ function showEditProfile() {
   form.last_name.value = state.viewingProfile.last_name;
   form.age.value = state.viewingProfile.age;
   form.gender.value = state.viewingProfile.gender;
+  state.pendingAvatarPath = null;
+  const avatarStatus = document.getElementById("avatar-status");
+  if (avatarStatus) avatarStatus.textContent = "";
   showView("editProfile");
 }
 

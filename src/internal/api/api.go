@@ -50,6 +50,12 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+const (
+	uploadDir            = "./assets/uploads"
+	uploadPathPrefix     = "/assets/uploads/"
+	imageOnlyBodyStorage = "\x01image_only\x01"
+)
+
 //--------------------------------------------------------------------------------------|
 
 func (a *API) Index(w http.ResponseWriter, r *http.Request) {
@@ -278,6 +284,7 @@ func (a *API) Posts(w http.ResponseWriter, r *http.Request) {
 		var payload struct {
 			Title       string `json:"title"`
 			Body        string `json:"body"`
+			ImagePath   string `json:"image_path"`
 			CategoryIDs []int  `json:"category_ids"`
 		}
 		if err := readJSON(r, &payload); err != nil {
@@ -297,9 +304,13 @@ func (a *API) Posts(w http.ResponseWriter, r *http.Request) {
 			badRequest(w, err.Error())
 			return
 		}
+		if err := validateUploadPath(payload.ImagePath); err != nil {
+			badRequest(w, err.Error())
+			return
+		}
 
 		repo := posts.NewDBRepo(a.db)
-		created, err := repo.CreatePost(r.Context(), userID, payload.Title, payload.Body, payload.CategoryIDs)
+		created, err := repo.CreatePost(r.Context(), userID, payload.Title, payload.Body, payload.ImagePath, payload.CategoryIDs)
 		if err != nil {
 			serverError(w, err)
 			return
@@ -568,7 +579,7 @@ func (a *API) ChatList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := `
-        SELECT u.id, u.username, u.first_name, u.last_name,
+        SELECT u.id, u.username, u.first_name, u.last_name, u.avatar_path,
                MAX(m.created_at) as last_time
         FROM users u
         LEFT JOIN messages m
@@ -598,8 +609,9 @@ func (a *API) ChatList(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var id int
 		var username, firstName, lastName string
+		var avatarPath sql.NullString
 		var lastTime sql.NullString
-		if err := rows.Scan(&id, &username, &firstName, &lastName, &lastTime); err != nil {
+		if err := rows.Scan(&id, &username, &firstName, &lastName, &avatarPath, &lastTime); err != nil {
 			serverError(w, err)
 			return
 		}
@@ -609,12 +621,13 @@ func (a *API) ChatList(w http.ResponseWriter, r *http.Request) {
 		}
 
 		items = append(items, map[string]any{
-			"id":         id,
-			"username":   username,
-			"first_name": firstName,
-			"last_name":  lastName,
-			"last_time":  lastTimeRFC3339,
-			"online":     onlineSet[id],
+			"id":          id,
+			"username":    username,
+			"first_name":  firstName,
+			"last_name":   lastName,
+			"avatar_path": avatarPath,
+			"last_time":   lastTimeRFC3339,
+			"online":      onlineSet[id],
 		})
 	}
 
@@ -716,6 +729,9 @@ func (a *API) handleWSMessage(userID int, raw []byte) {
 		if payload.Body == "" && payload.ImagePath == "" {
 			return
 		}
+		if err := validateUploadPath(payload.ImagePath); err != nil {
+			return
+		}
 		msg, err := a.insertMessageWithImage(context.Background(), userID, payload.ToUserID, payload.Body, payload.ImagePath)
 		if err != nil {
 			return
@@ -741,7 +757,7 @@ func (a *API) handleWSMessage(userID int, raw []byte) {
 
 func (a *API) getComments(ctx context.Context, postID, userID int) ([]models.Comment, error) {
 	rows, err := a.db.QueryContext(ctx,
-		`SELECT c.id, c.user_id, c.post_id, u.username, c.body, c.created_at, c.parent_id, c.depth,
+		`SELECT c.id, c.user_id, c.post_id, u.username, u.avatar_path, c.body, c.created_at, c.parent_id, c.depth,
                 COALESCE(SUM(CASE WHEN l.value = 1 THEN 1 ELSE 0 END), 0) AS likes,
                 COALESCE(SUM(CASE WHEN l.value = -1 THEN 1 ELSE 0 END), 0) AS dislikes,
                 COALESCE(SUM(CASE WHEN l.user_id = ? THEN l.value ELSE 0 END), 0) AS user_like
@@ -760,7 +776,7 @@ func (a *API) getComments(ctx context.Context, postID, userID int) ([]models.Com
 	for rows.Next() {
 		var c models.Comment
 		var parentID sql.NullInt64
-		if err := rows.Scan(&c.ID, &c.UserID, &c.PostID, &c.Username, &c.Body, &c.CreatedAt, &parentID, &c.Depth, &c.Likes, &c.Dislikes, &c.UserLike); err != nil {
+		if err := rows.Scan(&c.ID, &c.UserID, &c.PostID, &c.Username, &c.AvatarPath, &c.Body, &c.CreatedAt, &parentID, &c.Depth, &c.Likes, &c.Dislikes, &c.UserLike); err != nil {
 			return nil, err
 		}
 		c.ViewerID = userID
@@ -776,7 +792,7 @@ func (a *API) getComments(ctx context.Context, postID, userID int) ([]models.Com
 
 func (a *API) getCommentByID(ctx context.Context, commentID, userID int) (*models.Comment, error) {
 	row := a.db.QueryRowContext(ctx,
-		`SELECT c.id, c.user_id, c.post_id, u.username, c.body, c.created_at, c.parent_id, c.depth,
+		`SELECT c.id, c.user_id, c.post_id, u.username, u.avatar_path, c.body, c.created_at, c.parent_id, c.depth,
                 COALESCE(SUM(CASE WHEN l.value = 1 THEN 1 ELSE 0 END), 0) AS likes,
                 COALESCE(SUM(CASE WHEN l.value = -1 THEN 1 ELSE 0 END), 0) AS dislikes,
                 COALESCE(SUM(CASE WHEN l.user_id = ? THEN l.value ELSE 0 END), 0) AS user_like
@@ -788,7 +804,7 @@ func (a *API) getCommentByID(ctx context.Context, commentID, userID int) (*model
 
 	var c models.Comment
 	var parentID sql.NullInt64
-	if err := row.Scan(&c.ID, &c.UserID, &c.PostID, &c.Username, &c.Body, &c.CreatedAt, &parentID, &c.Depth, &c.Likes, &c.Dislikes, &c.UserLike); err != nil {
+	if err := row.Scan(&c.ID, &c.UserID, &c.PostID, &c.Username, &c.AvatarPath, &c.Body, &c.CreatedAt, &parentID, &c.Depth, &c.Likes, &c.Dislikes, &c.UserLike); err != nil {
 		return nil, err
 	}
 	c.ViewerID = userID
@@ -851,10 +867,11 @@ func (a *API) MyProfile(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var payload struct {
-			FirstName string `json:"first_name"`
-			LastName  string `json:"last_name"`
-			Age       int    `json:"age"`
-			Gender    string `json:"gender"`
+			FirstName  string `json:"first_name"`
+			LastName   string `json:"last_name"`
+			Age        int    `json:"age"`
+			Gender     string `json:"gender"`
+			AvatarPath string `json:"avatar_path"`
 		}
 		if err := readJSON(r, &payload); err != nil {
 			badRequest(w, err.Error())
@@ -877,10 +894,19 @@ func (a *API) MyProfile(w http.ResponseWriter, r *http.Request) {
 			badRequest(w, err.Error())
 			return
 		}
+		if err := validateUploadPath(payload.AvatarPath); err != nil {
+			badRequest(w, err.Error())
+			return
+		}
+
+		var avatarPath sql.NullString
+		if payload.AvatarPath != "" {
+			avatarPath = sql.NullString{String: payload.AvatarPath, Valid: true}
+		}
 
 		_, err := a.db.ExecContext(r.Context(),
-			`UPDATE users SET first_name = ?, last_name = ?, age = ?, gender = ? WHERE id = ?`,
-			payload.FirstName, payload.LastName, payload.Age, strings.ToLower(payload.Gender), userID)
+			`UPDATE users SET first_name = ?, last_name = ?, age = ?, gender = ?, avatar_path = ? WHERE id = ?`,
+			payload.FirstName, payload.LastName, payload.Age, strings.ToLower(payload.Gender), avatarPath, userID)
 
 		if err != nil {
 			serverError(w, err)
@@ -903,7 +929,7 @@ func (a *API) MyProfile(w http.ResponseWriter, r *http.Request) {
 func (a *API) getProfileByID(ctx context.Context, userID int) (*models.Profile, error) {
 	query := `
 		SELECT 
-			u.id, u.username, u.first_name, u.last_name, u.age, u.gender, u.email, u.created_at,
+			u.id, u.username, u.first_name, u.last_name, u.age, u.gender, u.avatar_path, u.email, u.created_at,
 			COALESCE(COUNT(DISTINCT p.id), 0) as post_count,
 			COALESCE(COUNT(DISTINCT c.id), 0) as comment_count,
 			COALESCE(SUM(CASE WHEN l.target_type = 'post' THEN 1 ELSE 0 END), 0) as like_count
@@ -918,7 +944,7 @@ func (a *API) getProfileByID(ctx context.Context, userID int) (*models.Profile, 
 	var profile models.Profile
 	err := a.db.QueryRowContext(ctx, query, userID).Scan(
 		&profile.ID, &profile.Username, &profile.FirstName, &profile.LastName,
-		&profile.Age, &profile.Gender, &profile.Email, &profile.CreatedAt,
+		&profile.Age, &profile.Gender, &profile.AvatarPath, &profile.Email, &profile.CreatedAt,
 		&profile.PostCount, &profile.CommentCount, &profile.LikeCount)
 
 	if err != nil {
@@ -942,46 +968,50 @@ func (a *API) UploadImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse multipart form (max 5MB)
-	if err := r.ParseMultipartForm(5 * 1024 * 1024); err != nil {
+	// Parse multipart form (max 8MB)
+	if err := r.ParseMultipartForm(8 * 1024 * 1024); err != nil {
 		badRequest(w, "Failed to parse form")
 		return
 	}
 
-	file, handler, err := r.FormFile("image")
+	file, _, err := r.FormFile("image")
 	if err != nil {
 		badRequest(w, "No image file provided")
 		return
 	}
 	defer file.Close()
 
-	// Validate file type
-	allowedTypes := map[string]bool{
-		"image/jpeg": true,
-		"image/png":  true,
-		"image/gif":  true,
-		"image/webp": true,
+	header := make([]byte, 512)
+	n, readErr := file.Read(header)
+	if readErr != nil && readErr != io.EOF {
+		badRequest(w, "Failed to read image")
+		return
 	}
-	if !allowedTypes[handler.Header.Get("Content-Type")] {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		serverError(w, err)
+		return
+	}
+
+	contentType := http.DetectContentType(header[:n])
+	allowedExt := map[string]string{
+		"image/jpeg": ".jpg",
+		"image/png":  ".png",
+		"image/gif":  ".gif",
+		"image/webp": ".webp",
+	}
+	ext, ok := allowedExt[contentType]
+	if !ok {
 		badRequest(w, "Invalid image format")
 		return
 	}
 
-	// Generate unique filename
-	ext := ""
-	switch handler.Header.Get("Content-Type") {
-	case "image/jpeg":
-		ext = ".jpg"
-	case "image/png":
-		ext = ".png"
-	case "image/gif":
-		ext = ".gif"
-	case "image/webp":
-		ext = ".webp"
+	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
+		serverError(w, err)
+		return
 	}
 
-	filename := fmt.Sprintf("%d_%s%s", userID, time.Now().Format("20060102150405"), ext)
-	uploadPath := filepath.Join("./assets/uploads", filename)
+	filename := fmt.Sprintf("%d_%d%s", userID, time.Now().UnixNano(), ext)
+	uploadPath := filepath.Join(uploadDir, filename)
 
 	dst, err := os.Create(uploadPath)
 	if err != nil {
@@ -996,7 +1026,7 @@ func (a *API) UploadImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{
-		"path": "/assets/uploads/" + filename,
+		"path": uploadPathPrefix + filename,
 	})
 }
 
@@ -1008,23 +1038,27 @@ func (a *API) insertMessage(ctx context.Context, senderID, receiverID int, body 
 
 func (a *API) insertMessageWithImage(ctx context.Context, senderID, receiverID int, body, imagePath string) (*models.Message, error) {
 	now := time.Now().UTC().Truncate(time.Second)
+	storedBody := body
+	if storedBody == "" && imagePath != "" {
+		storedBody = imageOnlyBodyStorage
+	}
 	var imagePathNullString sql.NullString
 	if imagePath != "" {
 		imagePathNullString = sql.NullString{String: imagePath, Valid: true}
 	}
 	result, err := a.db.ExecContext(ctx, `INSERT INTO messages (sender_id, receiver_id, body, image_path, created_at) VALUES (?, ?, ?, ?, ?)`,
-		senderID, receiverID, body, imagePathNullString, now)
+		senderID, receiverID, storedBody, imagePathNullString, now)
 	if err != nil {
 		return nil, err
 	}
 	id, _ := result.LastInsertId()
 	return &models.Message{
-		ID:        int(id),
-		SenderID:  senderID,
+		ID:         int(id),
+		SenderID:   senderID,
 		ReceiverID: receiverID,
-		Body:      body,
-		ImagePath: imagePathNullString,
-		CreatedAt: now,
+		Body:       body,
+		ImagePath:  imagePathNullString,
+		CreatedAt:  now,
 	}, nil
 }
 
@@ -1056,9 +1090,23 @@ func (a *API) getMessages(ctx context.Context, userID, otherID, beforeID, limit 
 		if err := rows.Scan(&m.ID, &m.SenderID, &m.ReceiverID, &m.Body, &m.ImagePath, &m.CreatedAt); err != nil {
 			return nil, err
 		}
+		if m.Body == imageOnlyBodyStorage {
+			m.Body = ""
+		}
 		msgs = append(msgs, m)
 	}
 	return msgs, nil
+}
+
+func validateUploadPath(path string) error {
+	if path == "" {
+		return nil
+	}
+	clean := filepath.ToSlash(filepath.Clean(path))
+	if !strings.HasPrefix(clean, uploadPathPrefix) || strings.Contains(clean, "..") {
+		return errors.New("invalid image path")
+	}
+	return nil
 }
 
 //--------------------------------------------------------------------------------------|

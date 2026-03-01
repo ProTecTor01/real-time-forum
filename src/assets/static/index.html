@@ -100,6 +100,11 @@
           <label>Заголовок<input name="title" required /></label>
           <label>Текст<textarea name="body" rows="6" required></textarea></label>
           <label>Категории<select name="category_ids" multiple id="category-select"></select></label>
+          <div class="upload-row">
+            <label for="post-image-input" class="ghost small">Фото к посту</label>
+            <input type="file" id="post-image-input" name="post_image" accept="image/*" />
+            <span id="post-image-status" class="status"></span>
+          </div>
           <button type="submit">Опубликовать</button>
           <p class="error" id="post-error"></p>
         </form>
@@ -116,8 +121,9 @@
           <div class="messages" id="messages"></div>
           <form id="message-form" class="message-form">
             <input name="body" placeholder="Сообщение..." autocomplete="off" />
-            <label for="image-input" class="ghost small" title="Прикрепить изображение">📎</label>
-            <input type="file" id="image-input" name="image" accept="image/*" style="display:none" />
+            <label for="chat-image-input" class="ghost small" title="Прикрепить изображение">Фото</label>
+            <input type="file" id="chat-image-input" name="image" accept="image/*" style="display:none" />
+            <span id="chat-image-status" class="status"></span>
             <button type="submit">Отправить</button>
           </form>
         </div>
@@ -144,6 +150,11 @@
               <option value="other">Другое</option>
             </select>
           </label>
+          <div class="upload-row">
+            <label for="avatar-input" class="ghost small">Новый аватар</label>
+            <input type="file" id="avatar-input" name="avatar" accept="image/*" />
+            <span id="avatar-status" class="status"></span>
+          </div>
           <button type="submit">Сохранить</button>
           <button type="button" id="cancel-edit">Отмена</button>
           <p class="error" id="edit-profile-error"></p>

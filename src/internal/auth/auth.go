@@ -71,9 +71,9 @@ func (r *DBRepo) Login(ctx context.Context, identifier, password string) (*model
 	var user models.User
 
 	err := r.db.QueryRowContext(ctx,
-		`SELECT id, username, email, first_name, last_name, age, gender, password_hash, created_at, role
+		`SELECT id, username, email, first_name, last_name, age, gender, avatar_path, password_hash, created_at, role
          FROM users WHERE email = LOWER(?) OR username = LOWER(?)`, identifier, identifier).Scan(
-		&user.ID, &user.Username, &user.Email, &user.FirstName, &user.LastName, &user.Age, &user.Gender, &user.PasswordHash, &user.CreatedAt, &user.Role)
+		&user.ID, &user.Username, &user.Email, &user.FirstName, &user.LastName, &user.Age, &user.Gender, &user.AvatarPath, &user.PasswordHash, &user.CreatedAt, &user.Role)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errmsg.ErrInvalidCredentials
@@ -97,9 +97,9 @@ func (r *DBRepo) Login(ctx context.Context, identifier, password string) (*model
 func (r *DBRepo) GetUserByID(ctx context.Context, userID int) (*models.User, error) {
 	var user models.User
 	err := r.db.QueryRowContext(ctx,
-		`SELECT id, username, email, first_name, last_name, age, gender, password_hash, created_at, role
+		`SELECT id, username, email, first_name, last_name, age, gender, avatar_path, password_hash, created_at, role
          FROM users WHERE id = ?`, userID).Scan(
-		&user.ID, &user.Username, &user.Email, &user.FirstName, &user.LastName, &user.Age, &user.Gender, &user.PasswordHash, &user.CreatedAt, &user.Role)
+		&user.ID, &user.Username, &user.Email, &user.FirstName, &user.LastName, &user.Age, &user.Gender, &user.AvatarPath, &user.PasswordHash, &user.CreatedAt, &user.Role)
 	if err != nil {
 		return nil, err
 	}
