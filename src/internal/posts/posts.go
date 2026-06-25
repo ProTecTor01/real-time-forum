@@ -95,7 +95,10 @@ func (r *DBRepo) GetPost(ctx context.Context, postID, userID int) (*models.Post,
 	if err != nil {
 		return nil, err
 	}
-	p.Categories, _ = r.getPostCategories(ctx, postID)
+	p.Categories, err = r.getPostCategories(ctx, postID)
+	if err != nil {
+		return nil, fmt.Errorf("get post categories: %w", err)
+	}
 	return &p, nil
 }
 

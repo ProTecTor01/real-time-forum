@@ -116,7 +116,10 @@
   <span id="chat-title">Выберите пользователя</span>
   <span id="chat-unread" class="badge hidden">0</span>
   <button id="clear-unread" class="ghost small">Прочитать все</button>
-  <span id="typing-indicator" class="typing hidden">печатает...</span>
+  <span id="typing-indicator" class="typing hidden" aria-live="polite">
+    <span id="typing-name"></span><span>печатает</span>
+    <span class="typing-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+  </span>
 </div>
           <div class="messages" id="messages"></div>
           <form id="message-form" class="message-form">

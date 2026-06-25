@@ -25,3 +25,13 @@
 
 # The development database file
 /assets/database/*.db
+/assets/database/*.db-*
+/src/assets/database/*.db
+/src/assets/database/*.db-*
+
+# Local Go cache used for sandboxed test runs
+/.gocache/
+/src/.gocache/
+
+# Local audit logs
+/audit-server*.log

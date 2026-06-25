@@ -14,7 +14,9 @@
   loadingMessages: false,
   hasMoreMessages: true,
   isTyping: false,
+  typingToUserId: null,
   typingTimeout: null,
+  remoteTypingTimeout: null,
   notificationPermission: "default",
   pendingImagePath: null,
   pendingPostImagePath: null,
@@ -47,6 +49,7 @@ const bannerEl = document.getElementById("new-posts-banner");
 const bannerCountEl = document.getElementById("new-posts-count");
 const showNewPostsBtn = document.getElementById("show-new-posts");
 const typingIndicator = document.getElementById("typing-indicator");
+const typingNameEl = document.getElementById("typing-name");
 const messageInput = document.querySelector("#message-form input");
 const chatTitleEl = document.getElementById("chat-title");
 const chatUnreadEl = document.getElementById("chat-unread");
@@ -58,6 +61,7 @@ function showView(name) {
   Object.values(views).forEach(v => v.classList.remove("active"));
   views[name].classList.add("active");
   if (name !== "chat") {
+    sendTypingState(false);
     setTypingIndicator(false);
   }
 }
@@ -273,9 +277,44 @@ function flushPendingPosts() {
   renderPosts();
 }
 
-function setTypingIndicator(visible) {
+function setTypingIndicator(visible, username = "") {
   if (!typingIndicator) return;
-  typingIndicator.classList.toggle("hidden", !visible);
+  clearTimeout(state.remoteTypingTimeout);
+  state.remoteTypingTimeout = null;
+
+  if (!visible) {
+    typingIndicator.classList.add("hidden");
+    if (typingNameEl) typingNameEl.textContent = "";
+    return;
+  }
+
+  if (typingNameEl) {
+    typingNameEl.textContent = username ? `${username} ` : "";
+  }
+  typingIndicator.classList.remove("hidden");
+  state.remoteTypingTimeout = setTimeout(() => setTypingIndicator(false), 4000);
+}
+
+function sendTypingState(typing, toUserId = state.activeChat?.id) {
+  const canSend = state.ws && state.ws.readyState === WebSocket.OPEN;
+
+  if (typing) {
+    if (!canSend || !toUserId || (state.isTyping && state.typingToUserId === toUserId)) return;
+    state.ws.send(JSON.stringify({ type: "typing", data: { to_user_id: toUserId, typing: true } }));
+    state.isTyping = true;
+    state.typingToUserId = toUserId;
+    return;
+  }
+
+  const targetUserId = state.typingToUserId || toUserId;
+  if (!state.isTyping || !targetUserId) return;
+  if (canSend) {
+    state.ws.send(JSON.stringify({ type: "typing", data: { to_user_id: targetUserId, typing: false } }));
+  }
+  state.isTyping = false;
+  state.typingToUserId = null;
+  clearTimeout(state.typingTimeout);
+  state.typingTimeout = null;
 }
 
 function updateUnreadHeader() {
@@ -453,22 +492,19 @@ function bindUI() {
     if (imagePath) payload.image_path = imagePath;
     state.ws.send(JSON.stringify({ type: "send_message", data: payload }));
     input.value = "";
+    sendTypingState(false);
     state.pendingImagePath = null;
     const chatImageStatus = document.getElementById("chat-image-status");
     if (chatImageStatus) chatImageStatus.textContent = "";
   });
   messageInput.addEventListener("input", () => {
     if (!state.activeChat || !state.ws) return;
-    if (!state.isTyping) {
-      state.ws.send(JSON.stringify({ type: "typing", data: { to_user_id: state.activeChat.id, typing: true } }));
-      state.isTyping = true;
-    }
+    const toUserId = state.activeChat.id;
+    sendTypingState(true, toUserId);
     clearTimeout(state.typingTimeout);
-    state.typingTimeout = setTimeout(() => {
-      state.isTyping = false;
-      state.ws.send(JSON.stringify({ type: "typing", data: { to_user_id: state.activeChat.id, typing: false } }));
-    }, 800);
+    state.typingTimeout = setTimeout(() => sendTypingState(false, toUserId), 800);
   });
+  messageInput.addEventListener("blur", () => sendTypingState(false));
 
   document.getElementById("chat-image-input").addEventListener("change", async e => {
     const file = e.target.files[0];
@@ -755,6 +791,7 @@ function renderChatList() {
 }
 
 async function openChat(chat) {
+  sendTypingState(false);
   state.activeChat = chat;
   state.messages = [];
   state.hasMoreMessages = true;
@@ -850,8 +887,9 @@ function connectWS() {
     }
     if (payload.type === "typing") {
       const data = payload.data || {};
-      if (state.activeChat && state.activeChat.id === data.from_user_id) {
-        setTypingIndicator(Boolean(data.typing));
+      const fromUserId = Number(data.from_user_id);
+      if (state.activeChat && state.activeChat.id === fromUserId) {
+        setTypingIndicator(Boolean(data.typing), data.username || state.activeChat.username);
       }
     }
     if (payload.type === "session_revoked") {
@@ -859,6 +897,10 @@ function connectWS() {
     }
   };
   state.ws.onclose = async () => {
+    state.isTyping = false;
+    state.typingToUserId = null;
+    clearTimeout(state.typingTimeout);
+    state.typingTimeout = null;
     if (!state.user) return;
     try {
       await loadMe();
@@ -893,6 +935,9 @@ function handleIncomingMessage(msg) {
     renderChatList();
     updateUnreadHeader();
     return;
+  }
+  if (msg.sender_id === state.activeChat.id) {
+    setTypingIndicator(false);
   }
   const atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 40;
   state.messages.push(msg);

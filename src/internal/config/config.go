@@ -39,6 +39,7 @@ func Setup() (*Config, error) {
 	}
 
 	if err := migrate(db); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("migrate db: %v", err)
 	}
 
@@ -96,25 +97,75 @@ func migrate(db *sql.DB) error {
 	}
 	schema, err := os.ReadFile(schemaPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("read schema %s: %w", schemaPath, err)
 	}
 
-	_, err = db.Exec(string(schema))
+	if _, err = db.Exec(string(schema)); err != nil {
+		return fmt.Errorf("apply schema %s: %w", schemaPath, err)
+	}
+
+	migrations := []struct {
+		table      string
+		column     string
+		definition string
+	}{
+		{"posts", "author", "author TEXT"},
+		{"users", "first_name", "first_name TEXT NOT NULL DEFAULT ''"},
+		{"users", "last_name", "last_name TEXT NOT NULL DEFAULT ''"},
+		{"users", "age", "age INTEGER NOT NULL DEFAULT 18"},
+		{"users", "gender", "gender TEXT NOT NULL DEFAULT 'other'"},
+		{"messages", "image_path", "image_path TEXT"},
+		{"users", "avatar_path", "avatar_path TEXT"},
+		{"posts", "image_path", "image_path TEXT"},
+	}
+	for _, migration := range migrations {
+		if err := ensureColumn(db, migration.table, migration.column, migration.definition); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func ensureColumn(db *sql.DB, table, column, definition string) error {
+	exists, err := columnExists(db, table, column)
 	if err != nil {
 		return err
 	}
+	if exists {
+		return nil
+	}
+	if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", table, definition)); err != nil {
+		return fmt.Errorf("add column %s.%s: %w", table, column, err)
+	}
+	return nil
+}
 
-	applyMigration := func(path string) {
-		migration, err := os.ReadFile(path)
-		if err == nil {
-			db.Exec(string(migration))
+func columnExists(db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, fmt.Errorf("inspect table %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid          int
+			name         string
+			columnType   string
+			notNull      int
+			defaultValue sql.NullString
+			primaryKey   int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, fmt.Errorf("scan column info for %s: %w", table, err)
+		}
+		if name == column {
+			return true, nil
 		}
 	}
-	applyMigration("./assets/database/migration_add_post_author.sql")
-	applyMigration("./assets/database/migration_add_user_profile.sql")
-	applyMigration("./assets/database/migration_add_messages.sql")
-	applyMigration("./assets/database/migration_add_images.sql")
-	applyMigration("./assets/database/migration_add_media.sql")
-
-	return nil
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate columns for %s: %w", table, err)
+	}
+	return false, nil
 }
