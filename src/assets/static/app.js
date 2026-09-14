@@ -1,6 +1,8 @@
 ﻿const state = {
   user: null,
   ws: null,
+  wsReconnectTimeout: null,
+  wsReconnectAttempts: 0,
   posts: [],
   pendingPosts: [],
   categories: [],
@@ -247,6 +249,9 @@ function showToast(text) {
 }
 
 function handleSessionExpired(message) {
+  clearTimeout(state.wsReconnectTimeout);
+  state.wsReconnectTimeout = null;
+  state.wsReconnectAttempts = 0;
   sendTypingState(false);
   setTypingIndicator(false);
   if (state.ws) {
@@ -883,9 +888,18 @@ function renderMessages() {
 }
 
 function connectWS() {
+  clearTimeout(state.wsReconnectTimeout);
+  state.wsReconnectTimeout = null;
+  if (state.ws) {
+    sendTypingState(false);
+    state.ws.close();
+  }
   const protocol = location.protocol === "https:" ? "wss" : "ws";
   const socket = new WebSocket(`${protocol}://${location.host}/ws`);
   state.ws = socket;
+  socket.onopen = () => {
+    if (state.ws === socket) state.wsReconnectAttempts = 0;
+  };
   socket.onmessage = event => {
     if (state.ws !== socket) return;
     const payload = JSON.parse(event.data);
@@ -917,17 +931,38 @@ function connectWS() {
       handleSessionExpired("Выполнен вход в аккаунт из другого браузера.");
     }
   };
-  socket.onclose = async () => {
+  socket.onclose = async (event = {}) => {
     if (state.ws !== socket) return;
     sendTypingState(false);
     setTypingIndicator(false);
     if (!state.user) return;
+    if (event.code === 1002) {
+      console.warn("[ws] protocol error", event.code, event.reason || "");
+      showToast("Соединение чата прервано. Перезагрузите страницу и проверьте подключение.");
+      return;
+    }
+    if (event.code === 1008) {
+      handleSessionExpired("Сессия завершена. Войдите снова.");
+      return;
+    }
     try {
       await loadMe();
+      if (state.ws !== socket) return;
       if (!state.user) {
         handleSessionExpired("Сессия завершена. Войдите снова.");
+        return;
       }
     } catch (_) {}
+    if (state.ws !== socket || !state.user) return;
+    if (state.wsReconnectAttempts >= 5) {
+      showToast("Не удалось восстановить соединение чата. Перезагрузите страницу.");
+      return;
+    }
+    const delay = Math.min(1000 * 2 ** state.wsReconnectAttempts++, 10000);
+    state.wsReconnectTimeout = setTimeout(() => {
+      state.wsReconnectTimeout = null;
+      if (state.ws === socket && state.user) connectWS();
+    }, delay);
   };
 }
 
@@ -1072,7 +1107,6 @@ function showEditProfile() {
 init().catch(err => {
   console.error(err);
 });
-
 
 
 

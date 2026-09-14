@@ -64,6 +64,16 @@ CREATE TABLE IF NOT EXISTS categories (
     name TEXT NOT NULL UNIQUE CHECK(length(name) BETWEEN 1 AND 50)
 );
 
+-- Applied on every startup; preserve existing categories and their IDs.
+INSERT INTO categories (name) VALUES
+    ('Общее'),
+    ('Технологии'),
+    ('Программирование'),
+    ('Игры'),
+    ('Музыка'),
+    ('Спорт')
+ON CONFLICT(name) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS post_categories (
     post_id INTEGER NOT NULL,
     category_id INTEGER NOT NULL,

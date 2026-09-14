@@ -57,7 +57,7 @@ func (c *Client) ReadPump(handle func([]byte), onClose func()) {
 		_, message, err := c.conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("[ws] read error: %v", err)
+				log.Printf("[ws] read error user=%d remote=%s: %v", c.userID, c.conn.RemoteAddr(), err)
 			}
 			break
 		}

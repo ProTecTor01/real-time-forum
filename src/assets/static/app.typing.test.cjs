@@ -5,7 +5,7 @@ const vm = require("node:vm");
 const { test } = require("node:test");
 
 // Run the actual SPA handlers with a small DOM and deterministic timers.
-function fixture() {
+function fixture(options = {}) {
   let now = 10000;
   let nextTimer = 0;
   const timers = new Map();
@@ -16,6 +16,9 @@ function fixture() {
       const listeners = {};
       elements.set(id, {
         value: "", textContent: "", innerHTML: "", style: {},
+        children: [],
+        appendChild(child) { this.children.push(child); },
+        remove() {},
         classList: { add: c => classes.add(c), remove: c => classes.delete(c), contains: c => classes.has(c) },
         addEventListener: (type, callback) => { (listeners[type] ??= []).push(callback); },
         dispatch: (type, event = {}) => { for (const callback of listeners[type] || []) callback(event); },
@@ -28,6 +31,7 @@ function fixture() {
     getElementById: element,
     querySelector: () => element("message-input"),
     querySelectorAll: () => [],
+    createElement: () => element(`created-${elements.size}`),
   });
   const window = element("window");
   class Socket {
@@ -41,6 +45,9 @@ function fixture() {
     document, window, WebSocket: Socket, console,
     location: { protocol: "http:", host: "localhost" },
     Date: { now: () => now },
+    requestAnimationFrame: callback => callback(),
+    fetch: async () => ({ ok: true, json: async () => options.loadUser ?? { id: 1, username: "Alice" } }),
+    alert: () => {},
     setTimeout: (callback, delay) => { const id = ++nextTimer; timers.set(id, { callback, at: now + delay }); return id; },
     clearTimeout: id => timers.delete(id),
   });
@@ -54,6 +61,7 @@ function fixture() {
   const input = element("message-input");
   return {
     ...app, input, document, window,
+    toast: element("toast-root"),
     indicator: element("typing-indicator"), name: element("typing-name"), form: element("message-form"),
     advance(ms) {
       const end = now + ms;
@@ -156,4 +164,64 @@ test("an old socket cannot reset a newer connection", async () => {
   assert.equal(f.indicator.classList.contains("hidden"), false);
   oldSocket.onmessage({ data: JSON.stringify({ type: "typing", data: { from_user_id: 2, typing: false } }) });
   assert.equal(f.indicator.classList.contains("hidden"), false);
+});
+
+test("temporary disconnection reconnects and clears typing", async () => {
+  const f = fixture();
+  f.state.user = { id: 1 };
+  f.type();
+  f.receive(true);
+  const socket = f.state.ws;
+  socket.close();
+  await socket.onclose({ code: 1006 });
+  assert.equal(f.state.isTyping, false);
+  assert.equal(f.indicator.classList.contains("hidden"), true);
+  f.advance(999);
+  assert.equal(f.state.ws, socket);
+  f.advance(1);
+  assert.notEqual(f.state.ws, socket);
+  f.state.ws.onopen();
+  assert.equal(f.state.wsReconnectAttempts, 0);
+});
+
+test("protocol errors are visible and do not trigger an endless reconnect loop", async () => {
+  const f = fixture();
+  f.state.user = { id: 1 };
+  const socket = f.state.ws;
+  socket.close();
+  await socket.onclose({ code: 1002, reason: "RSV1 set, bad opcode 7, bad MASK" });
+  assert.match(f.toast.children[0].textContent, /Соединение чата прервано/);
+  assert.equal(f.state.wsReconnectTimeout, null);
+  f.advance(20000);
+  assert.equal(f.state.ws, socket);
+});
+
+test("session rejection cancels reconnection and shows authentication", async () => {
+  const f = fixture();
+  f.state.user = { id: 1 };
+  const socket = f.state.ws;
+  socket.close();
+  await socket.onclose({ code: 1008 });
+  assert.equal(f.state.user, null);
+  assert.equal(f.state.ws, null);
+  assert.equal(f.state.wsReconnectTimeout, null);
+});
+
+test("failed reconnects are bounded and back off", async () => {
+  const f = fixture();
+  f.state.user = { id: 1 };
+  for (const delay of [1000, 2000, 4000, 8000, 10000]) {
+    const socket = f.state.ws;
+    socket.close();
+    await socket.onclose({ code: 1006 });
+    f.advance(delay - 1);
+    assert.equal(f.state.ws, socket);
+    f.advance(1);
+    assert.notEqual(f.state.ws, socket);
+  }
+  const socket = f.state.ws;
+  socket.close();
+  await socket.onclose({ code: 1006 });
+  assert.equal(f.state.wsReconnectTimeout, null);
+  assert.match(f.toast.children[0].textContent, /Не удалось восстановить/);
 });

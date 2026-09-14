@@ -86,6 +86,7 @@ func (a *API) WS(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		log.Printf("[ws] handshake error user=%d: %v", userID, err)
 		return
 	}
 
