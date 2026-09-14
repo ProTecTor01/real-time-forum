@@ -78,6 +78,12 @@ func (a *API) WS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var username string
+	if err := a.db.QueryRowContext(r.Context(), `SELECT username FROM users WHERE id = ?`, userID).Scan(&username); err != nil {
+		unauthorized(w)
+		return
+	}
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -93,9 +99,14 @@ func (a *API) WS(w http.ResponseWriter, r *http.Request) {
 	a.hub.Broadcast(ws.Event{Type: "presence", Data: presence})
 
 	go client.WritePump()
+	typing := typingState{hub: a.hub, userID: userID, username: username}
 	client.ReadPump(func(msg []byte) {
+		if typing.handle(msg) {
+			return
+		}
 		a.handleWSMessage(userID, msg)
 	}, func() {
+		typing.stop()
 		presenceUpdate := map[string]any{"users": a.hub.OnlineUserIDs()}
 		a.hub.Broadcast(ws.Event{Type: "presence", Data: presenceUpdate})
 	})
@@ -738,18 +749,6 @@ func (a *API) handleWSMessage(userID int, raw []byte) {
 		}
 		a.hub.SendToUser(payload.ToUserID, ws.Event{Type: "pm_message", Data: msg})
 		a.hub.SendToUser(userID, ws.Event{Type: "pm_message", Data: msg})
-	case "typing":
-		var payload struct {
-			ToUserID int  `json:"to_user_id"`
-			Typing   bool `json:"typing"`
-		}
-		if err := json.Unmarshal(envelope.Data, &payload); err != nil {
-			return
-		}
-		if payload.ToUserID == 0 {
-			return
-		}
-		a.hub.SendToUser(payload.ToUserID, ws.Event{Type: "typing", Data: map[string]any{"from_user_id": userID, "typing": payload.Typing}})
 	}
 }
 

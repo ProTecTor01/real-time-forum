@@ -116,7 +116,7 @@
   <span id="chat-title">Выберите пользователя</span>
   <span id="chat-unread" class="badge hidden">0</span>
   <button id="clear-unread" class="ghost small">Прочитать все</button>
-  <span id="typing-indicator" class="typing hidden" aria-live="polite">
+  <span id="typing-indicator" class="typing hidden" role="status" aria-live="polite" aria-atomic="true">
     <span id="typing-name"></span><span>печатает</span>
     <span class="typing-dots" aria-hidden="true"><span></span><span></span><span></span></span>
   </span>
@@ -171,6 +171,5 @@
   <script src="/static/app.js"></script>
 </body>
 </html>
-
 
 

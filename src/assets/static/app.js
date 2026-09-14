@@ -16,6 +16,7 @@
   isTyping: false,
   typingToUserId: null,
   typingTimeout: null,
+  lastTypingSentAt: 0,
   remoteTypingTimeout: null,
   notificationPermission: "default",
   pendingImagePath: null,
@@ -51,6 +52,9 @@ const showNewPostsBtn = document.getElementById("show-new-posts");
 const typingIndicator = document.getElementById("typing-indicator");
 const typingNameEl = document.getElementById("typing-name");
 const messageInput = document.querySelector("#message-form input");
+const TYPING_IDLE_MS = 1200;
+const TYPING_REFRESH_MS = 1000;
+const TYPING_EXPIRE_MS = 4000;
 const chatTitleEl = document.getElementById("chat-title");
 const chatUnreadEl = document.getElementById("chat-unread");
 const clearUnreadBtn = document.getElementById("clear-unread");
@@ -243,6 +247,8 @@ function showToast(text) {
 }
 
 function handleSessionExpired(message) {
+  sendTypingState(false);
+  setTypingIndicator(false);
   if (state.ws) {
     const socket = state.ws;
     state.ws = null;
@@ -289,30 +295,35 @@ function setTypingIndicator(visible, username = "") {
   }
 
   if (typingNameEl) {
-    typingNameEl.textContent = username ? `${username} ` : "";
+    const name = username ? `${username} ` : "";
+    if (typingNameEl.textContent !== name) typingNameEl.textContent = name;
   }
   typingIndicator.classList.remove("hidden");
-  state.remoteTypingTimeout = setTimeout(() => setTypingIndicator(false), 4000);
+  state.remoteTypingTimeout = setTimeout(() => setTypingIndicator(false), TYPING_EXPIRE_MS);
 }
 
 function sendTypingState(typing, toUserId = state.activeChat?.id) {
   const canSend = state.ws && state.ws.readyState === WebSocket.OPEN;
 
   if (typing) {
-    if (!canSend || !toUserId || (state.isTyping && state.typingToUserId === toUserId)) return;
+    if (!canSend || !toUserId) return;
+    if (state.isTyping && state.typingToUserId !== toUserId) sendTypingState(false);
+    const now = Date.now();
+    if (state.isTyping && now - state.lastTypingSentAt < TYPING_REFRESH_MS) return;
     state.ws.send(JSON.stringify({ type: "typing", data: { to_user_id: toUserId, typing: true } }));
     state.isTyping = true;
     state.typingToUserId = toUserId;
+    state.lastTypingSentAt = now;
     return;
   }
 
   const targetUserId = state.typingToUserId || toUserId;
-  if (!state.isTyping || !targetUserId) return;
-  if (canSend) {
+  if (state.isTyping && targetUserId && canSend) {
     state.ws.send(JSON.stringify({ type: "typing", data: { to_user_id: targetUserId, typing: false } }));
   }
   state.isTyping = false;
   state.typingToUserId = null;
+  state.lastTypingSentAt = 0;
   clearTimeout(state.typingTimeout);
   state.typingTimeout = null;
 }
@@ -483,7 +494,7 @@ function bindUI() {
 
   document.getElementById("message-form").addEventListener("submit", e => {
     e.preventDefault();
-    if (!state.activeChat || !state.ws) return;
+    if (!state.activeChat || state.ws?.readyState !== WebSocket.OPEN) return;
     const input = e.target.body;
     const body = input.value.trim();
     const imagePath = state.pendingImagePath;
@@ -498,13 +509,21 @@ function bindUI() {
     if (chatImageStatus) chatImageStatus.textContent = "";
   });
   messageInput.addEventListener("input", () => {
-    if (!state.activeChat || !state.ws) return;
+    if (!state.activeChat || !views.chat.classList.contains("active") || !messageInput.value.trim()) {
+      sendTypingState(false);
+      return;
+    }
     const toUserId = state.activeChat.id;
     sendTypingState(true, toUserId);
     clearTimeout(state.typingTimeout);
-    state.typingTimeout = setTimeout(() => sendTypingState(false, toUserId), 800);
+    state.typingTimeout = setTimeout(() => sendTypingState(false, toUserId), TYPING_IDLE_MS);
   });
   messageInput.addEventListener("blur", () => sendTypingState(false));
+  window.addEventListener("blur", () => sendTypingState(false));
+  window.addEventListener("pagehide", () => sendTypingState(false));
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) sendTypingState(false);
+  });
 
   document.getElementById("chat-image-input").addEventListener("change", async e => {
     const file = e.target.files[0];
@@ -865,8 +884,10 @@ function renderMessages() {
 
 function connectWS() {
   const protocol = location.protocol === "https:" ? "wss" : "ws";
-  state.ws = new WebSocket(`${protocol}://${location.host}/ws`);
-  state.ws.onmessage = event => {
+  const socket = new WebSocket(`${protocol}://${location.host}/ws`);
+  state.ws = socket;
+  socket.onmessage = event => {
+    if (state.ws !== socket) return;
     const payload = JSON.parse(event.data);
     if (payload.type === "post_created") {
       state.pendingPosts.unshift(payload.data);
@@ -888,7 +909,7 @@ function connectWS() {
     if (payload.type === "typing") {
       const data = payload.data || {};
       const fromUserId = Number(data.from_user_id);
-      if (state.activeChat && state.activeChat.id === fromUserId) {
+      if (views.chat.classList.contains("active") && state.activeChat?.id === fromUserId) {
         setTypingIndicator(Boolean(data.typing), data.username || state.activeChat.username);
       }
     }
@@ -896,11 +917,10 @@ function connectWS() {
       handleSessionExpired("Выполнен вход в аккаунт из другого браузера.");
     }
   };
-  state.ws.onclose = async () => {
-    state.isTyping = false;
-    state.typingToUserId = null;
-    clearTimeout(state.typingTimeout);
-    state.typingTimeout = null;
+  socket.onclose = async () => {
+    if (state.ws !== socket) return;
+    sendTypingState(false);
+    setTypingIndicator(false);
     if (!state.user) return;
     try {
       await loadMe();
@@ -950,6 +970,7 @@ function handleIncomingMessage(msg) {
 }
 
 function applyPresence(ids) {
+  if (state.activeChat && !ids.includes(state.activeChat.id)) setTypingIndicator(false);
   state.chats.forEach(chat => {
     chat.online = ids.includes(chat.id);
   });
@@ -1051,8 +1072,6 @@ function showEditProfile() {
 init().catch(err => {
   console.error(err);
 });
-
-
 
 
 
